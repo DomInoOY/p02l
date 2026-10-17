@@ -70,15 +70,14 @@
     ];
   }
 
+  // Timer playback (running/paused, current level, remaining time) used to
+  // live here in localStorage — it's now owned by the server (server.js +
+  // timer-engine.js) as the single source of truth across windows/devices.
+  // Money/cashdesk/prize/levels structure are untouched and still live here.
   function defaultState() {
     return {
       clubName: "P02L",
       levels: defaultLevels(),
-      currentLevelIndex: 0,
-      levelStartedAt: null,
-      pausedRemainingSec: null,
-      isRunning: false,
-      isPaused: false,
       cashdesk: {
         open: false, // cashier screen stays locked until admin confirms today's prices
         rake: 10,
@@ -243,27 +242,93 @@
   }
 
   // ---------- timer math ----------
-  function levelRemaining(state, nowMs) {
-    var lvl = state.levels[state.currentLevelIndex];
-    if (!lvl) return 0;
-    var full = lvl.duration * 60;
-    if (state.isPaused || !state.isRunning) {
-      return state.pausedRemainingSec != null ? state.pausedRemainingSec : full;
-    }
-    var elapsed = (nowMs - (state.levelStartedAt || nowMs)) / 1000;
-    return full - elapsed;
+  // `timer` is a snapshot from the server: {status, levelIndex, remainingMs,
+  // endsAt, serverNow, pauseReason, levelCount}. `nowMs` should already be
+  // offset-corrected to the server's clock (see createTimerClient below) —
+  // these functions take it as a plain argument so they stay pure/testable.
+  function timerRemainingSec(timer, nowMs) {
+    if (!timer) return 0;
+    if (timer.status === "paused") return Math.max(0, timer.remainingMs / 1000);
+    return Math.max(0, (timer.endsAt - nowMs) / 1000);
   }
-  function elapsedTournamentSeconds(state, nowMs) {
+  function elapsedTournamentSeconds(levels, timer, nowMs) {
+    if (!timer) return 0;
     var sec = 0;
-    for (var i = 0; i < state.currentLevelIndex; i++) sec += state.levels[i].duration * 60;
-    var lvl = state.levels[state.currentLevelIndex];
-    if (lvl) sec += Math.max(0, lvl.duration * 60 - levelRemaining(state, nowMs));
+    for (var i = 0; i < timer.levelIndex; i++) if (levels[i]) sec += levels[i].duration * 60;
+    var lvl = levels[timer.levelIndex];
+    if (lvl) sec += Math.max(0, lvl.duration * 60 - timerRemainingSec(timer, nowMs));
     return sec;
   }
   function levelNumber(levels, idx) {
     var n = 0;
     for (var i = 0; i <= idx; i++) if (!levels[i].isBreak) n++;
     return n;
+  }
+
+  // ---------- timer client: talks to /api/timer, server clock is truth ----------
+  // Polls periodically for the authoritative snapshot and tracks the offset
+  // between server time and this browser's clock; remainingSec()/now() use
+  // that offset so a skewed client clock never changes what's displayed.
+  // No local decrementing counter — remaining is always recomputed from the
+  // absolute endsAt/remainingMs the server last reported.
+  function createTimerClient(opts) {
+    opts = opts || {};
+    var pollMs = opts.pollMs || 1000;
+    var onUpdate = opts.onUpdate || function () {};
+    var onError = opts.onError || function () {};
+    var offsetMs = 0;
+    var last = null;
+
+    function apply(snapshot) {
+      offsetMs = snapshot.serverNow - Date.now();
+      last = snapshot;
+      onUpdate(last);
+      return last;
+    }
+
+    function request(path, method, body) {
+      return fetch(path, {
+        method: method,
+        headers: body ? { "Content-Type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      })
+        .then(function (r) {
+          if (!r.ok) throw new Error("http " + r.status);
+          return r.json();
+        })
+        .then(apply)
+        .catch(function (e) {
+          onError(e);
+          throw e;
+        });
+    }
+
+    function poll() {
+      request("/api/timer", "GET");
+    }
+
+    function now() {
+      return Date.now() + offsetMs;
+    }
+
+    poll();
+    var pollTimer = setInterval(poll, pollMs);
+
+    return {
+      now: now,
+      getSnapshot: function () { return last; },
+      remainingSec: function () { return timerRemainingSec(last, now()); },
+      start: function () { return request("/api/timer/start", "POST", {}); },
+      pause: function (reason) { return request("/api/timer/pause", "POST", { reason: reason || null }); },
+      setLevel: function (index) { return request("/api/timer/level", "POST", { index: index }); },
+      adjust: function (deltaMs) { return request("/api/timer/adjust", "POST", { deltaMs: deltaMs }); },
+      setExact: function (sec) { return request("/api/timer/set", "POST", { sec: sec }); },
+      syncLevels: function (levels) {
+        var durationsSec = levels.map(function (l) { return l.duration * 60; });
+        return request("/api/timer/levels", "POST", { durationsSec: durationsSec });
+      },
+      stop: function () { clearInterval(pollTimer); },
+    };
   }
 
   // ---------- sound (Web Audio — 100% offline, no network) ----------
@@ -435,9 +500,10 @@
     prizePoolAuto: prizePoolAuto,
     prizePoolTotal: prizePoolTotal,
     payoutBreakdown: payoutBreakdown,
-    levelRemaining: levelRemaining,
+    timerRemainingSec: timerRemainingSec,
     elapsedTournamentSeconds: elapsedTournamentSeconds,
     levelNumber: levelNumber,
+    createTimerClient: createTimerClient,
     getAudioCtx: getAudioCtx,
     playWarningSound: playWarningSound,
     playLevelChangeSound: playLevelChangeSound,

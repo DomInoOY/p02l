@@ -39,12 +39,13 @@
   var P = window.P02L;
   var state = P.loadState();
   var tab = "timer";
-  var now = Date.now();
   var templates = loadTemplates();
   var newTemplateName = "";
   var genCfg = { startSb: 25, growth: 50, duration: 20, count: 10, breakEvery: 4, breakDuration: 15, anteFromLevel: 4 };
   var voice = null;
   var voiceStatus = "";
+  var exactTimeInput = ""; // mm:ss field, kept as its own var so re-render doesn't clobber typing
+  var PAUSE_REASONS = ["Разбор ситуации", "Технический перерыв", "Перерыв"];
 
   // ---------- local template storage (separate from live state) ----------
   var TPL_KEY = "p02l_templates_v1";
@@ -62,24 +63,49 @@
     render();
   }
 
-  // ---------- timer controls ----------
-  function currentRemaining() {
-    return P.levelRemaining(state, now);
-  }
-  function start() { persist(Object.assign({}, state, { isRunning: true, isPaused: false, levelStartedAt: Date.now(), pausedRemainingSec: null })); }
-  function pause() { persist(Object.assign({}, state, { isPaused: true, pausedRemainingSec: Math.max(0, currentRemaining()), levelStartedAt: null })); }
-  function resume() { persist(Object.assign({}, state, { isPaused: false, levelStartedAt: Date.now(), pausedRemainingSec: null })); }
+  // ---------- timer controls (server-authoritative, see server.js/timer-engine.js) ----------
+  // status/levelIndex/remainingMs/endsAt no longer live in localStorage — the
+  // timer client polls /api/timer and ticks locally off the server's clock.
+  var timerClient = P.createTimerClient({ onUpdate: function () { render(); } });
+
+  function start() { timerClient.start(); }
+  function pause(reason) { timerClient.pause(reason); }
+  function pauseWithReason(reason) { timerClient.pause(reason); }
+  function setExactTimeInput(v) { exactTimeInput = v; }
   function skip(dir) {
-    var idx = Math.min(Math.max(state.currentLevelIndex + dir, 0), state.levels.length - 1);
-    persist(Object.assign({}, state, { currentLevelIndex: idx, levelStartedAt: Date.now(), pausedRemainingSec: null, isPaused: false }));
+    var snap = timerClient.getSnapshot();
+    if (!snap) return;
+    var idx = Math.min(Math.max(snap.levelIndex + dir, 0), state.levels.length - 1);
+    timerClient.setLevel(idx);
   }
   function resetClock() {
-    persist(Object.assign({}, state, { currentLevelIndex: 0, isRunning: false, isPaused: false, levelStartedAt: null, pausedRemainingSec: null }));
+    timerClient.pause().then(function () { timerClient.setLevel(0); });
+  }
+  function adjustTime(deltaMs) { timerClient.adjust(deltaMs); }
+  function parseMMSS(s) {
+    var m = /^(\d{1,3}):([0-5]\d)$/.exec(String(s).trim());
+    if (!m) return null;
+    return (+m[1]) * 60 + (+m[2]);
+  }
+  function setExactTime() {
+    var sec = parseMMSS(exactTimeInput);
+    if (sec == null) { alert("Введите время как мм:сс, например 12:00"); return; }
+    var snap = timerClient.getSnapshot();
+    var lvl = snap ? state.levels[snap.levelIndex] : null;
+    if (lvl && sec > lvl.duration * 60) {
+      if (!confirm("Введённое время (" + P.mmss(sec) + ") больше длительности уровня (" + P.mmss(lvl.duration * 60) + "). Всё равно установить?")) return;
+    }
+    timerClient.setExact(sec);
   }
   function updateName(v) { persist(Object.assign({}, state, { clubName: v })); }
 
   // ---------- levels ----------
-  function updateLevels(levels) { persist(Object.assign({}, state, { levels: levels })); }
+  // level-duration sync to the server happens once, centrally, in the
+  // P.subscribe callback at the bottom of this file (it fires synchronously
+  // off persist() too) — covers edits from this window AND any other one
+  function updateLevels(levels) {
+    persist(Object.assign({}, state, { levels: levels }));
+  }
   function setLevelField(id, field, val) {
     var levels = state.levels.map(function (l) {
       if (l.id !== id) return l;
@@ -188,8 +214,8 @@
     voice = P.createVoiceAssistant({
       lang: "ru-RU",
       commands: [
-        { patterns: ["пауза", "стоп"], label: "Пауза", action: function () { if (state.isRunning && !state.isPaused) pause(); } },
-        { patterns: ["старт", "продолжить", "начать"], label: "Старт", action: function () { if (!state.isRunning) start(); else if (state.isPaused) resume(); } },
+        { patterns: ["пауза", "стоп"], label: "Пауза", action: function () { var s = timerClient.getSnapshot(); if (s && s.status === "running") pause(); } },
+        { patterns: ["старт", "продолжить", "начать"], label: "Старт", action: function () { var s = timerClient.getSnapshot(); if (s && s.status === "paused") start(); } },
         { patterns: ["следующий уровень", "вперёд", "вперед"], label: "Следующий уровень", action: function () { skip(1); } },
         { patterns: ["предыдущий уровень", "назад уровень"], label: "Предыдущий уровень", action: function () { skip(-1); } },
       ],
@@ -222,9 +248,10 @@
   function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;"); }
 
   function render() {
-    now = Date.now();
-    var level = state.levels[state.currentLevelIndex] || null;
-    var remaining = level ? currentRemaining() : 0;
+    var snap = timerClient.getSnapshot();
+    var level = snap ? (state.levels[snap.levelIndex] || null) : null;
+    var remaining = snap ? timerClient.remainingSec() : 0;
+    var running = !!snap && snap.status === "running";
 
     var html = '<div class="topbar">' +
       '<img src="data:image/png;base64,' + ICON_B64 + '" style="height:28px;">' +
@@ -232,20 +259,41 @@
       '<div style="flex:1;"></div>' +
     '</div>';
 
-    html += '<div class="note-banner">Это окно и окна «TV», «Касса», «Призовые» должны быть открыты с этого же компьютера — все данные синхронизируются только локально, без интернета.</div>';
+    html += '<div class="note-banner">Это окно и окна «TV», «Касса», «Призовые» должны быть открыты с этого же компьютера — все данные (деньги/структура) синхронизируются локально через браузер. Часы таймера теперь считает сервер (server.js) — он должен быть запущен.</div>';
 
     html += '<div class="status-bar">' +
-      '<div class="sg" id="statusTimer" style="font-size:36px;font-weight:700;min-width:110px;">' + (level ? P.mmss(remaining) : "--:--") + '</div>' +
+      '<div class="sg" id="statusTimer" style="font-size:36px;font-weight:700;min-width:110px;">' + (snap ? P.mmss(remaining) : "--:--") + '</div>' +
       '<div style="font-size:13px;color:var(--cream-dim);min-width:160px;">' +
-        (level ? (level.isBreak ? "Перерыв" : "Уровень " + P.levelNumber(state.levels, state.currentLevelIndex) + " · SB " + P.fmt(level.sb) + " / BB " + P.fmt(level.bb) + (level.ante ? " / A " + P.fmt(level.ante) : "")) : "Нет уровней") +
+        (!snap ? "Нет связи с сервером…" :
+          !level ? "Нет уровней" :
+          (level.isBreak ? "Перерыв" : "Уровень " + P.levelNumber(state.levels, snap.levelIndex) + " · SB " + P.fmt(level.sb) + " / BB " + P.fmt(level.bb) + (level.ante ? " / A " + P.fmt(level.ante) : "")) +
+          (!running ? ' <span style="color:var(--rust);">⏸ пауза' + (snap.pauseReason ? " — " + esc(snap.pauseReason) : "") + '</span>' : "")) +
       '</div>' +
       '<div style="display:flex;gap:8px;margin-left:auto;">' +
-        '<button class="icon-btn" onclick="skip(-1)" ' + (state.currentLevelIndex === 0 ? "disabled" : "") + '>&lsaquo;</button>' +
-        (!state.isRunning ? '<button class="pill-btn gold small" onclick="start()" ' + (!level ? "disabled" : "") + '>Старт</button>' :
-          state.isPaused ? '<button class="pill-btn gold small" onclick="resume()">Продолжить</button>' :
-          '<button class="pill-btn rust small" onclick="pause()">Пауза</button>') +
-        '<button class="icon-btn" onclick="skip(1)" ' + (state.currentLevelIndex >= state.levels.length - 1 ? "disabled" : "") + '>&rsaquo;</button>' +
+        '<button class="icon-btn" onclick="skip(-1)" ' + (!snap || snap.levelIndex === 0 ? "disabled" : "") + '>&lsaquo;</button>' +
+        (running
+          ? '<button class="pill-btn rust small" onclick="pause()" ' + (!snap ? "disabled" : "") + '>Пауза</button>'
+          : '<button class="pill-btn gold small" onclick="start()" ' + (!snap || !level ? "disabled" : "") + '>Старт</button>') +
+        '<button class="icon-btn" onclick="skip(1)" ' + (!snap || snap.levelIndex >= state.levels.length - 1 ? "disabled" : "") + '>&rsaquo;</button>' +
         '<button class="pill-btn ghost small" onclick="resetClock()">Сброс</button>' +
+      '</div>' +
+    '</div>';
+
+    html += '<div class="status-bar" style="flex-direction:column;align-items:stretch;gap:10px;">' +
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+        '<span style="font-size:12px;color:var(--cream-dim);">Правка времени:</span>' +
+        '<button class="pill-btn ghost small" onclick="adjustTime(-60000)">−1 мин</button>' +
+        '<button class="pill-btn ghost small" onclick="adjustTime(-10000)">−10 с</button>' +
+        '<button class="pill-btn ghost small" onclick="adjustTime(10000)">+10 с</button>' +
+        '<button class="pill-btn ghost small" onclick="adjustTime(60000)">+1 мин</button>' +
+        '<input type="text" placeholder="мм:сс" value="' + esc(exactTimeInput) + '" style="width:70px;" onchange="setExactTimeInput(this.value)">' +
+        '<button class="pill-btn ghost small" onclick="setExactTime()">Установить</button>' +
+      '</div>' +
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+        '<span style="font-size:12px;color:var(--cream-dim);">Пауза с причиной:</span>' +
+        PAUSE_REASONS.map(function (r) {
+          return '<button class="pill-btn ghost small" onclick="pauseWithReason(\'' + esc(r) + '\')">' + esc(r) + '</button>';
+        }).join("") +
       '</div>' +
     '</div>';
 
@@ -287,8 +335,9 @@
 
     html += '<div class="col-head"><div>#</div><div>SB</div><div>BB</div><div>ANTE</div><div>мин</div><div></div><div></div></div>';
     html += '<div style="display:flex;flex-direction:column;gap:6px;">';
+    var curIdx = (timerClient.getSnapshot() || {}).levelIndex;
     state.levels.forEach(function (l, i) {
-      var cur = i === state.currentLevelIndex;
+      var cur = i === curIdx;
       html += '<div class="level-row' + (cur ? " current" : "") + '">' +
         '<div style="font-size:12px;color:var(--cream-dim);text-align:center;">' + (l.isBreak ? "&#10074;&#10074;" : P.levelNumber(state.levels, i)) + '</div>';
       if (l.isBreak) {
@@ -437,7 +486,8 @@
   // expose handlers
   window.setTab = function (t) { tab = t; render(); };
   window.updateName = updateName;
-  window.start = start; window.pause = pause; window.resume = resume; window.skip = skip; window.resetClock = resetClock;
+  window.start = start; window.pause = pause; window.pauseWithReason = pauseWithReason; window.skip = skip; window.resetClock = resetClock;
+  window.adjustTime = adjustTime; window.setExactTime = setExactTime; window.setExactTimeInput = setExactTimeInput;
   window.setLevelField = setLevelField; window.removeLevel = removeLevel; window.addLevel = addLevel; window.addBreak = addBreak; window.moveLevel = moveLevel;
   window.setGenField = function (key, val) { genCfg[key] = val; };
   window.runGenerator = runGenerator;
@@ -449,17 +499,31 @@
   window.saveTemplate = saveTemplate; window.loadTemplate = loadTemplate; window.deleteTemplate = deleteTemplate;
   window.toggleVoice = toggleVoice;
 
-  // only the status-bar countdown ticks every second — a full render() would
-  // rebuild every input and throw focus out of whatever field is being edited
+  // only the status-bar countdown ticks every 250ms — a full render() would
+  // rebuild every input and throw focus out of whatever field is being edited.
+  // Reads the timer client's already-offset-corrected clock, no decrementing
+  // counter of its own (per spec: client never owns the countdown math).
   function tickStatusBar() {
-    now = Date.now();
-    var level = state.levels[state.currentLevelIndex] || null;
+    var snap = timerClient.getSnapshot();
     var el = document.getElementById("statusTimer");
-    if (el && level) el.textContent = P.mmss(currentRemaining());
+    if (el && snap) el.textContent = P.mmss(timerClient.remainingSec());
   }
 
-  P.subscribe(function (s) { state = s; render(); });
-  setInterval(tickStatusBar, 1000);
+  var lastSyncedLevels = null;
+  P.subscribe(function (s) {
+    state = s;
+    render();
+    // another window may have edited the blind structure — keep the
+    // server's duration list in sync regardless of who changed it
+    var key = JSON.stringify(s.levels.map(function (l) { return l.duration; }));
+    if (key !== lastSyncedLevels) {
+      lastSyncedLevels = key;
+      timerClient.syncLevels(s.levels);
+    }
+  });
+  lastSyncedLevels = JSON.stringify(state.levels.map(function (l) { return l.duration; }));
+  timerClient.syncLevels(state.levels); // bootstrap: server starts with no duration info at all
+  setInterval(tickStatusBar, 250);
   render();
 })();
 </script>

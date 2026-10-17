@@ -24,6 +24,7 @@
   .ring-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; }
   .timer-digits { font-size: clamp(52px,11vw,120px); font-weight: 700; line-height: 1; }
   .timer-status { font-size: clamp(11px,1.1vw,14px); color: var(--cream-dim); }
+  .pause-badge { font-size: clamp(16px,2vw,24px); font-weight: 700; color: var(--rust); letter-spacing: 2px; }
   .blinds-row { display: flex; gap: clamp(20px,4vw,64px); margin-top: .6vh; }
   .blind-stat { text-align: center; }
   .blind-label { color: var(--cream-dim); font-size: clamp(11px,1.2vw,14px); letter-spacing: 1px; }
@@ -85,9 +86,12 @@
   var remaining = 0;
   var warned = false;
   var lastTick = null;
-  var prevIndex = state.currentLevelIndex;
+  var prevIndex = null; // set once the first timer snapshot arrives
   var showSchedule = false;
   var gateOpen = true;
+  // status/levelIndex/remainingMs/endsAt now live on the server — this client
+  // polls and ticks off the server's clock, never its own decrementing counter
+  var timerClient = P.createTimerClient({ onUpdate: function () { if (!gateOpen) render(); } });
 
   document.getElementById("gateLogo").src = "data:image/png;base64," + ICON_B64;
 
@@ -121,26 +125,19 @@
   });
 
   // ---------- keyboard remote ----------
+  // (the old pause-resets-the-clock bug lived here — fixed by moving the
+  // whole running/paused/remaining state machine to the server, see server.js)
   function toggleRunning() {
-    var s = P.loadState();
-    if (!s.isRunning) {
-      s.isRunning = true; s.isPaused = false; s.levelStartedAt = Date.now(); s.pausedRemainingSec = null;
-    } else if (s.isPaused) {
-      s.isPaused = false; s.levelStartedAt = Date.now(); s.pausedRemainingSec = null;
-    } else {
-      // compute remaining BEFORE flipping isPaused — levelRemaining() short-circuits
-      // to the full level duration once isPaused is true, so setting the flag first
-      // would snap the clock back to the start of the level instead of pausing it
-      var remaining = Math.max(0, P.levelRemaining(s, Date.now()));
-      s.isPaused = true; s.pausedRemainingSec = remaining; s.levelStartedAt = null;
-    }
-    P.saveState(s);
+    var snap = timerClient.getSnapshot();
+    if (!snap) return;
+    if (snap.status === "running") timerClient.pause();
+    else timerClient.start();
   }
   function skipLevel(dir) {
-    var s = P.loadState();
-    var idx = Math.min(Math.max(s.currentLevelIndex + dir, 0), s.levels.length - 1);
-    s.currentLevelIndex = idx; s.levelStartedAt = Date.now(); s.pausedRemainingSec = null; s.isPaused = false;
-    P.saveState(s);
+    var snap = timerClient.getSnapshot();
+    if (!snap) return;
+    var idx = Math.min(Math.max(snap.levelIndex + dir, 0), state.levels.length - 1);
+    timerClient.setLevel(idx);
   }
   window.addEventListener("keydown", function (e) {
     if (gateOpen) return;
@@ -155,19 +152,24 @@
 
   function render() {
     if (gateOpen) return;
-    var now = Date.now();
-    var level = state.levels[state.currentLevelIndex] || null;
+    var snap = timerClient.getSnapshot();
+    if (!snap) {
+      document.getElementById("root").innerHTML = '<div style="padding:60px;text-align:center;color:var(--cream-dim)">Подключение к серверу…</div>';
+      return;
+    }
+    var level = state.levels[snap.levelIndex] || null;
     if (!level) {
       document.getElementById("root").innerHTML = '<div style="padding:60px;text-align:center;color:var(--cream-dim)">Структура блайндов пуста — настройте её в окне управления.</div>';
       return;
     }
-    remaining = P.levelRemaining(state, now);
+    var running = snap.status === "running";
+    remaining = timerClient.remainingSec();
     var levelSeconds = level.duration * 60;
     var progress = levelSeconds > 0 ? Math.min(1, Math.max(0, 1 - remaining / levelSeconds)) : 0;
-    var urgent = state.isRunning && !state.isPaused && remaining <= 60;
-    var critical = state.isRunning && !state.isPaused && remaining <= 10;
-    var nextLevel = state.levels[state.currentLevelIndex + 1] || null;
-    var elapsed = P.elapsedTournamentSeconds(state, now);
+    var urgent = running && remaining <= 60;
+    var critical = running && remaining <= 10;
+    var nextLevel = state.levels[snap.levelIndex + 1] || null;
+    var elapsed = P.elapsedTournamentSeconds(state.levels, snap, timerClient.now());
     var payouts = P.payoutBreakdown(state);
 
     var R = 130, CIRC = 2 * Math.PI * R;
@@ -175,11 +177,10 @@
     if (urgent) html += '<div class="' + (critical ? "bg-pulse-fast" : "bg-pulse-soft") + ' bg-overlay"></div>';
 
     html += '<div class="top-left">' +
-      '<button class="icon-btn" onclick="skipLevel(-1)" ' + (state.currentLevelIndex === 0 ? "disabled" : "") + ' title="&larr;">&lsaquo;</button>' +
-      (!state.isRunning ? '<button class="pill-btn gold small" onclick="toggleRunning()">&#9654; Старт</button>' :
-        state.isPaused ? '<button class="pill-btn gold small" onclick="toggleRunning()">&#9654; Продолжить</button>' :
+      '<button class="icon-btn" onclick="skipLevel(-1)" ' + (snap.levelIndex === 0 ? "disabled" : "") + ' title="&larr;">&lsaquo;</button>' +
+      (!running ? '<button class="pill-btn gold small" onclick="toggleRunning()">&#9654; Старт</button>' :
         '<button class="pill-btn ghost small" onclick="toggleRunning()">&#10073;&#10073; Пауза</button>') +
-      '<button class="icon-btn" onclick="skipLevel(1)" ' + (state.currentLevelIndex >= state.levels.length - 1 ? "disabled" : "") + ' title="&rarr;">&rsaquo;</button>' +
+      '<button class="icon-btn" onclick="skipLevel(1)" ' + (snap.levelIndex >= state.levels.length - 1 ? "disabled" : "") + ' title="&rarr;">&rsaquo;</button>' +
     '</div>';
     html += '<div class="top-right"><button class="pill-btn ghost small" onclick="toggleFs()">&#x26F6;</button></div>';
 
@@ -189,7 +190,7 @@
       '<button class="pill-btn ghost small" style="margin-left:4px;" onclick="toggleSchedule()">Вся структура</button>' +
       '<div style="flex:1;"></div>' +
       '<div class="sg" style="font-size:clamp(14px,1.8vw,20px);color:var(--cream-dim);letter-spacing:1px;">' +
-        (level.isBreak ? "ПЕРЕРЫВ" : "УРОВЕНЬ " + P.levelNumber(state.levels, state.currentLevelIndex)) +
+        (level.isBreak ? "ПЕРЕРЫВ" : "УРОВЕНЬ " + P.levelNumber(state.levels, snap.levelIndex)) +
       '</div>' +
     '</div>';
 
@@ -212,7 +213,11 @@
       '</svg>' +
       '<div class="ring-center">' +
         '<div class="sg timer-digits ' + (critical ? "pulse" : "") + '" style="color:' + (urgent ? "var(--rust)" : "var(--cream)") + ';">' + P.mmss(remaining) + '</div>' +
-        '<div class="timer-status">' + (!state.isRunning ? "остановлен" : state.isPaused ? "на паузе" : "осталось") + '</div>' +
+        // noticeable "PAUSE" badge — no reason shown here on purpose, that's
+        // only visible in the admin window and (later) the journal
+        (!running
+          ? '<div class="sg pause-badge">&#10073;&#10073; ПАУЗА</div>'
+          : '<div class="timer-status">осталось</div>') +
       '</div></div>';
 
     if (!level.isBreak) {
@@ -233,7 +238,7 @@
 
     html += '<div class="ladder">';
     state.levels.forEach(function (l, i) {
-      var cur = i === state.currentLevelIndex, done = i < state.currentLevelIndex;
+      var cur = i === snap.levelIndex, done = i < snap.levelIndex;
       html += '<div class="ladder-chip sg" style="min-width:' + (l.isBreak ? "34px" : "54px") + ';' +
         'background:' + (cur ? "var(--gold)" : "transparent") + ';' +
         'color:' + (cur ? "var(--bg-deep)" : done ? "var(--cream-dim)" : "var(--cream)") + ';' +
@@ -261,17 +266,19 @@
     html += '<div class="kbd-hint">Пробел — старт/пауза · &larr; &rarr; — уровень</div>';
 
     if (showSchedule) html += scheduleModal();
-    if (state.isRunning && !state.isPaused && remaining <= 10 && remaining > 0) html += countdownOverlay(Math.ceil(remaining), nextLevel);
+    if (running && remaining <= 10 && remaining > 0) html += countdownOverlay(Math.ceil(remaining), nextLevel);
 
     document.getElementById("root").innerHTML = html;
 
     // sound/TTS triggers
-    if (prevIndex !== state.currentLevelIndex) {
-      prevIndex = state.currentLevelIndex;
+    if (prevIndex === null) {
+      prevIndex = snap.levelIndex; // first render after connecting — don't play a sound
+    } else if (prevIndex !== snap.levelIndex) {
+      prevIndex = snap.levelIndex;
       warned = false;
-      if (state.isRunning) P.playLevelChangeSound();
+      if (running) P.playLevelChangeSound();
     }
-    if (state.isRunning && !state.isPaused) {
+    if (running) {
       if (remaining <= 60 && remaining > 0 && !warned) {
         warned = true;
         P.playWarningSound();
@@ -281,15 +288,7 @@
       if (sec >= 1 && sec <= 10) {
         if (lastTick !== sec) { lastTick = sec; P.playTickSound(); }
       } else { lastTick = null; }
-      // auto-advance
-      if (remaining <= 0) {
-        var nextIdx = state.currentLevelIndex + 1;
-        if (nextIdx < state.levels.length) {
-          var s2 = P.loadState();
-          s2.currentLevelIndex = nextIdx; s2.levelStartedAt = Date.now(); s2.pausedRemainingSec = null;
-          P.saveState(s2);
-        }
-      }
+      // auto-advance to the next level now happens on the server (timer-engine.js tick())
     }
   }
 
@@ -309,8 +308,9 @@
       '<div class="schedule-title">ВСЯ СТРУКТУРА БЛАЙНДОВ</div>' +
       '<div class="schedule-box" onclick="event.stopPropagation()">' +
       '<div class="schedule-head"><div>#</div><div>SB / BB</div><div>ANTE</div><div>МИН</div></div>';
+    var curIdx = (timerClient.getSnapshot() || {}).levelIndex;
     state.levels.forEach(function (l, i) {
-      var cur = i === state.currentLevelIndex, done = i < state.currentLevelIndex;
+      var cur = i === curIdx, done = i < curIdx;
       var cls = "schedule-row sg" + (cur ? " current" : "") + (done ? " done" : "") + (l.isBreak ? " break" : "");
       if (l.isBreak) {
         html += '<div class="' + cls + '"><div>&#10074;&#10074;</div><div style="grid-column:2/4;">ПЕРЕРЫВ</div><div>' + l.duration + '</div></div>';
@@ -343,7 +343,7 @@
   };
 
   P.subscribe(function (s) { state = s; render(); });
-  setInterval(function () { if (!gateOpen) render(); }, 500);
+  setInterval(function () { if (!gateOpen) render(); }, 250);
 })();
 </script>
 </body>
