@@ -410,7 +410,7 @@
     document.addEventListener("DOMContentLoaded", function () {
       var b = document.createElement("div");
       b.textContent = "⚠ Открыто напрямую, без сервера — окна могут не синхронизироваться между собой. Закройте и запустите через «Запустить P02L.bat».";
-      b.style.cssText = "position:fixed;top:0;left:0;right:0;background:#e2593f;color:#fff;text-align:center;padding:7px 10px;font-size:12px;z-index:99999;font-family:sans-serif;";
+      b.className = "file-warning";
       document.body.appendChild(b);
     });
   }
