@@ -1,4 +1,5 @@
-/* P02L server — Step 1: static files + server-authoritative timer.
+/* P02L server — Step 1+2: static files, server-authoritative timer, and
+   crash-safe persistence to disk.
    Node built-ins only (http, fs, path) — zero npm dependencies on purpose,
    so the club PC never needs internet after Node itself is installed once.
    Money/cashdesk/prize logic is untouched — it still lives in each browser's
@@ -8,13 +9,40 @@
 var http = require("http");
 var fs = require("fs");
 var path = require("path");
-var createTimer = require("./timer-engine").createTimer;
+var timerEngine = require("./timer-engine");
+var persistence = require("./persistence");
 
 var ROOT = __dirname;
 var PORT = process.env.PORT || 8080;
 var TICK_MS = 250;
+var HEARTBEAT_MS = 5000;
+var DATA_FILE = path.join(ROOT, "data", "timer-state.json");
 
-var timer = createTimer();
+var timer = timerEngine.createTimer();
+
+// ---------- Step 2: load persisted state, recover from an unclean shutdown ----------
+var recoveredBanner = null; // {remainingMs, levelIndex} | null — shown once in admin until dismissed
+(function loadAndRecover() {
+  var persisted = persistence.readJson(DATA_FILE);
+  if (!persisted || !persisted.raw) return; // first run ever, or nothing usable on disk
+  var result = timerEngine.computeRecovery(persisted.raw, persisted.lastHeartbeatAt || 0);
+  timer.restoreState(result.restored);
+  recoveredBanner = result.recovered;
+  if (recoveredBanner) {
+    console.log(
+      "P02L: recovered after an unclean shutdown — level " + (recoveredBanner.levelIndex + 1) +
+      ", " + Math.round(recoveredBanner.remainingMs / 1000) + "s remaining, resuming paused."
+    );
+  }
+})();
+
+function persistNow() {
+  persistence.atomicWriteJson(DATA_FILE, {
+    raw: timer.exportState(),
+    lastHeartbeatAt: Date.now(),
+  });
+}
+persistNow(); // establish a baseline file immediately, even before any action
 
 var MIME = {
   ".html": "text/html; charset=utf-8",
@@ -31,6 +59,14 @@ function sendJson(res, code, obj) {
     "Content-Length": Buffer.byteLength(body),
   });
   res.end(body);
+}
+
+// snapshot() plus the one-shot recovery banner, if any — this is what every
+// /api/timer response (GET and the action POSTs) returns to the client
+function fullSnapshot() {
+  var snap = timer.snapshot();
+  snap.recovered = recoveredBanner;
+  return snap;
 }
 
 function readJsonBody(req, cb) {
@@ -79,47 +115,67 @@ var server = http.createServer(function (req, res) {
   var url = req.url.split("?")[0];
 
   if (url === "/api/timer" && req.method === "GET") {
-    return sendJson(res, 200, timer.snapshot());
+    return sendJson(res, 200, fullSnapshot());
   }
   if (url === "/api/timer/levels" && req.method === "POST") {
     return readJsonBody(req, function (err, body) {
       if (err || !Array.isArray(body.durationsSec)) return sendJson(res, 400, { error: "bad body" });
-      sendJson(res, 200, timer.setDurations(body.durationsSec));
+      timer.setDurations(body.durationsSec);
+      persistNow();
+      sendJson(res, 200, fullSnapshot());
     });
   }
   if (url === "/api/timer/start" && req.method === "POST") {
-    return sendJson(res, 200, timer.start());
+    timer.start();
+    persistNow();
+    return sendJson(res, 200, fullSnapshot());
   }
   if (url === "/api/timer/pause" && req.method === "POST") {
     return readJsonBody(req, function (err, body) {
-      sendJson(res, 200, timer.pause(body && body.reason));
+      timer.pause(body && body.reason);
+      persistNow();
+      sendJson(res, 200, fullSnapshot());
     });
   }
   if (url === "/api/timer/level" && req.method === "POST") {
     return readJsonBody(req, function (err, body) {
       if (err || typeof body.index !== "number") return sendJson(res, 400, { error: "bad body" });
-      sendJson(res, 200, timer.setLevel(body.index));
+      timer.setLevel(body.index);
+      persistNow();
+      sendJson(res, 200, fullSnapshot());
     });
   }
   if (url === "/api/timer/adjust" && req.method === "POST") {
     return readJsonBody(req, function (err, body) {
       if (err || typeof body.deltaMs !== "number") return sendJson(res, 400, { error: "bad body" });
-      sendJson(res, 200, timer.adjust(body.deltaMs));
+      timer.adjust(body.deltaMs);
+      persistNow();
+      sendJson(res, 200, fullSnapshot());
     });
   }
   if (url === "/api/timer/set" && req.method === "POST") {
     return readJsonBody(req, function (err, body) {
       if (err || typeof body.sec !== "number") return sendJson(res, 400, { error: "bad body" });
-      sendJson(res, 200, timer.setExact(body.sec));
+      timer.setExact(body.sec);
+      persistNow();
+      sendJson(res, 200, fullSnapshot());
     });
+  }
+  if (url === "/api/timer/dismiss-recovered" && req.method === "POST") {
+    recoveredBanner = null;
+    return sendJson(res, 200, fullSnapshot());
   }
 
   serveStatic(req, res);
 });
 
 setInterval(function () {
-  timer.tick();
+  if (timer.tick()) persistNow(); // a level just auto-advanced — that's a change, persist it immediately
 }, TICK_MS);
+
+setInterval(function () {
+  if (timer.snapshot().status === "running") persistNow(); // heartbeat while running, per spec
+}, HEARTBEAT_MS);
 
 server.listen(PORT, function () {
   console.log("P02L server: http://localhost:" + PORT + "/");

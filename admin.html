@@ -71,6 +71,7 @@
   function start() { timerClient.start(); }
   function pause(reason) { timerClient.pause(reason); }
   function pauseWithReason(reason) { timerClient.pause(reason); }
+  function dismissRecovered() { timerClient.dismissRecovered(); }
   function setExactTimeInput(v) { exactTimeInput = v; }
   function skip(dir) {
     var snap = timerClient.getSnapshot();
@@ -260,6 +261,13 @@
     '</div>';
 
     html += '<div class="note-banner">Это окно и окна «TV», «Касса», «Призовые» должны быть открыты с этого же компьютера — все данные (деньги/структура) синхронизируются локально через браузер. Часы таймера теперь считает сервер (server.js) — он должен быть запущен.</div>';
+
+    if (snap && snap.recovered) {
+      html += '<div class="err-banner" style="display:flex;align-items:center;gap:12px;">' +
+        '<div style="flex:1;">Восстановлено после перезапуска: осталось ' + P.mmss(snap.recovered.remainingMs / 1000) + ' на уровне ' + (snap.recovered.levelIndex + 1) + '. Таймер стоит на паузе — проверьте и нажмите «Старт», когда будете готовы.</div>' +
+        '<button class="pill-btn ghost small" onclick="dismissRecovered()">Понятно</button>' +
+      '</div>';
+    }
 
     html += '<div class="status-bar">' +
       '<div class="sg" id="statusTimer" style="font-size:36px;font-weight:700;min-width:110px;">' + (snap ? P.mmss(remaining) : "--:--") + '</div>' +
@@ -488,6 +496,7 @@
   window.updateName = updateName;
   window.start = start; window.pause = pause; window.pauseWithReason = pauseWithReason; window.skip = skip; window.resetClock = resetClock;
   window.adjustTime = adjustTime; window.setExactTime = setExactTime; window.setExactTimeInput = setExactTimeInput;
+  window.dismissRecovered = dismissRecovered;
   window.setLevelField = setLevelField; window.removeLevel = removeLevel; window.addLevel = addLevel; window.addBreak = addBreak; window.moveLevel = moveLevel;
   window.setGenField = function (key, val) { genCfg[key] = val; };
   window.runGenerator = runGenerator;

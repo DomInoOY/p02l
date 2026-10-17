@@ -115,6 +115,33 @@ function createTimer(opts) {
     return true;
   }
 
+  // raw internal fields for persistence (server.js writes this to disk) —
+  // distinct from snapshot(), which computes a live remainingMs for display
+  function exportState() {
+    return {
+      status: state.status,
+      levelIndex: state.levelIndex,
+      remainingMs: state.remainingMs,
+      endsAt: state.endsAt,
+      pauseReason: state.pauseReason,
+      durationsSec: state.durationsSec.slice(),
+    };
+  }
+
+  // used both to reload a persisted file on startup and (with status forced
+  // to "paused") to apply a crash-recovered remainder — see server.js
+  function restoreState(raw) {
+    raw = raw || {};
+    state.status = raw.status === "running" ? "running" : "paused";
+    state.levelIndex = raw.levelIndex || 0;
+    state.remainingMs = raw.remainingMs || 0;
+    state.endsAt = raw.endsAt != null ? raw.endsAt : null;
+    state.pauseReason = raw.pauseReason || null;
+    state.durationsSec = Array.isArray(raw.durationsSec) ? raw.durationsSec.slice() : [];
+    durationsKnown = state.durationsSec.length > 0;
+    return snapshot();
+  }
+
   return {
     snapshot: snapshot,
     setDurations: setDurations,
@@ -124,7 +151,31 @@ function createTimer(opts) {
     adjust: adjust,
     setExact: setExact,
     tick: tick,
+    exportState: exportState,
+    restoreState: restoreState,
   };
 }
 
-module.exports = { createTimer: createTimer };
+// Pure helper (no I/O): given a persisted raw state and the timestamp of the
+// last confirmed-alive heartbeat, compute what to restore after an unclean
+// shutdown. If the timer was running, freeze the remainder as of that last
+// heartbeat and force paused — the clock must never silently "catch up"
+// through a downtime window nobody was watching. If it was already paused,
+// there's nothing in flight to recompute.
+function computeRecovery(raw, lastHeartbeatAt) {
+  if (!raw || raw.status !== "running") {
+    return { restored: raw, recovered: null };
+  }
+  var frozenRemainingMs = Math.max(0, (raw.endsAt || 0) - lastHeartbeatAt);
+  var restored = {
+    status: "paused",
+    levelIndex: raw.levelIndex,
+    remainingMs: frozenRemainingMs,
+    endsAt: null,
+    pauseReason: null,
+    durationsSec: raw.durationsSec,
+  };
+  return { restored: restored, recovered: { remainingMs: frozenRemainingMs, levelIndex: raw.levelIndex } };
+}
+
+module.exports = { createTimer: createTimer, computeRecovery: computeRecovery };

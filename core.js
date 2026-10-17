@@ -323,6 +323,7 @@
       setLevel: function (index) { return request("/api/timer/level", "POST", { index: index }); },
       adjust: function (deltaMs) { return request("/api/timer/adjust", "POST", { deltaMs: deltaMs }); },
       setExact: function (sec) { return request("/api/timer/set", "POST", { sec: sec }); },
+      dismissRecovered: function () { return request("/api/timer/dismiss-recovered", "POST", {}); },
       syncLevels: function (levels) {
         var durationsSec = levels.map(function (l) { return l.duration * 60; });
         return request("/api/timer/levels", "POST", { durationsSec: durationsSec });
