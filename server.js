@@ -50,6 +50,8 @@ var MIME = {
   ".css": "text/css; charset=utf-8",
   ".png": "image/png",
   ".json": "application/json; charset=utf-8",
+  ".woff2": "font/woff2",
+  ".svg": "image/svg+xml",
 };
 
 function sendJson(res, code, obj) {
