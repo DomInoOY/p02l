@@ -264,8 +264,33 @@ setInterval(function () {
   if (timer.snapshot().status === "running") persistNow(); // heartbeat while running, per spec
 }, HEARTBEAT_MS);
 
+// opens the default browser the same way the old PowerShell static server
+// used to (Start-Process) — works regardless of how this process was
+// launched (the .bat, `npm start`, or `node server.js` by hand)
+function openBrowser(url) {
+  var cmd = process.platform === "win32" ? 'start "" "' + url + '"'
+    : process.platform === "darwin" ? 'open "' + url + '"'
+    : 'xdg-open "' + url + '"';
+  require("child_process").exec(cmd, function () {});
+}
+
+server.on("error", function (err) {
+  if (err.code === "EADDRINUSE") {
+    console.log("Не удалось запустить сервер на порту " + PORT + " — он уже занят (возможно, P02L уже запущен).");
+    console.log("Если P02L уже открыт в браузере, просто откройте новую вкладку: http://localhost:" + PORT + "/index.html");
+  } else {
+    console.log("Ошибка сервера: " + err.message);
+  }
+  // the tick/heartbeat intervals above would otherwise keep this process
+  // alive forever even though it never actually started listening
+  process.exit(1);
+});
+
 server.listen(PORT, function () {
+  var url = "http://localhost:" + PORT + "/index.html";
   console.log("P02L server: http://localhost:" + PORT + "/");
+  console.log("Держите это окно открытым, пока используете систему. Чтобы остановить — закройте окно или Ctrl+C.");
+  openBrowser(url);
 });
 
 module.exports = { server: server, timer: timer };
