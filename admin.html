@@ -78,6 +78,14 @@
   .template-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 16px 12px 20px; }
   .template-row .name { flex: 1; font-size: 15px; font-weight: 600; }
 
+  .journal-row { display: flex; align-items: flex-start; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+  .journal-row:last-child { border-bottom: none; }
+  .journal-time { flex: 0 0 72px; font-size: 13px; color: var(--cream-faint); padding-top: 2px; }
+  .journal-main { flex: 1; min-width: 0; }
+  .journal-action { font-size: 14px; font-weight: 600; }
+  .journal-diff { font-size: 12px; margin-top: 2px; word-break: break-word; }
+  .journal-device { flex: 0 0 auto; font-size: 12px; text-align: right; white-space: nowrap; }
+
   .voice-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 16px 24px; }
   .voice-row .text { flex: 1 1 320px; display: flex; flex-direction: column; gap: 2px; }
   .voice-row .text b { font-size: 15px; font-weight: 600; }
@@ -113,6 +121,8 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
   var voiceOn = false;
   var exactTimeInput = ""; // mm:ss field, kept as its own var so re-render doesn't clobber typing
   var PAUSE_REASONS = ["Разбор ситуации", "Технический перерыв", "Перерыв"];
+  var journalState = { entries: [], total: 0, filter: "all", loading: false };
+  var JOURNAL_TYPES = [["all","Все"],["timer","Таймер"],["cashdesk","Касса"],["tariff","Тарифы"],["levels","Уровни"],["prize","Призовые"],["settings","Настройки"]];
 
   // ---------- local template storage (separate from live state) ----------
   var TPL_KEY = "p02l_templates_v1";
@@ -139,6 +149,21 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
   function pause(reason) { timerClient.pause(reason); }
   function pauseWithReason(reason) { timerClient.pause(reason); }
   function dismissRecovered() { timerClient.dismissRecovered(); }
+
+  // ---------- journal (append-only, server-side — see server.js/journal.js) ----------
+  function fetchJournal() {
+    journalState.loading = true;
+    fetch("/api/journal?type=" + encodeURIComponent(journalState.filter) + "&limit=200")
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        journalState.entries = data.entries;
+        journalState.total = data.total;
+        journalState.loading = false;
+        if (tab === "journal") render();
+      })
+      .catch(function () { journalState.loading = false; });
+  }
+  function setJournalFilter(type) { journalState.filter = type; fetchJournal(); }
   function skip(dir) {
     var snap = timerClient.getSnapshot();
     if (!snap) return;
@@ -165,7 +190,11 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
     timerClient.setExact(sec);
   }
   function setExactTimeInput(v) { exactTimeInput = v; }
-  function updateName(v) { persist(Object.assign({}, state, { clubName: v })); }
+  function updateName(v) {
+    var before = state.clubName;
+    persist(Object.assign({}, state, { clubName: v }));
+    P.logAction("settings", "Название клуба", before, v);
+  }
 
   // ---------- levels ----------
   // level-duration sync to the server happens once, centrally, in the
@@ -173,6 +202,7 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
   // off persist() too) — covers edits from this window AND any other one
   function updateLevels(levels) { persist(Object.assign({}, state, { levels: levels })); }
   function setLevelField(id, field, val) {
+    var before = state.levels.find(function (l) { return l.id === id; });
     var levels = state.levels.map(function (l) {
       if (l.id !== id) return l;
       var patch = {}; patch[field] = val;
@@ -180,16 +210,25 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
       return Object.assign({}, l, patch);
     });
     updateLevels(levels);
+    P.logAction("levels", "Правка уровня (" + field + ")", before && before[field], val);
   }
-  function removeLevel(id) { updateLevels(state.levels.filter(function (l) { return l.id !== id; })); }
+  function removeLevel(id) {
+    var removed = state.levels.find(function (l) { return l.id === id; });
+    updateLevels(state.levels.filter(function (l) { return l.id !== id; }));
+    P.logAction("levels", "Удалён уровень", removed, null);
+  }
   function addLevel() {
     var last = null;
     for (var i = state.levels.length - 1; i >= 0; i--) if (!state.levels[i].isBreak) { last = state.levels[i]; break; }
     var sb = last ? P.roundBlind(last.sb * 1.5) : 25;
-    updateLevels(state.levels.concat([{ id: P.uid(), sb: sb, bb: sb * 2, ante: 0, duration: last ? last.duration : 20, isBreak: false }]));
+    var added = { id: P.uid(), sb: sb, bb: sb * 2, ante: 0, duration: last ? last.duration : 20, isBreak: false };
+    updateLevels(state.levels.concat([added]));
+    P.logAction("levels", "Добавлен уровень", null, added);
   }
   function addBreak() {
-    updateLevels(state.levels.concat([{ id: P.uid(), sb: 0, bb: 0, ante: 0, duration: 15, isBreak: true }]));
+    var added = { id: P.uid(), sb: 0, bb: 0, ante: 0, duration: 15, isBreak: true };
+    updateLevels(state.levels.concat([added]));
+    P.logAction("levels", "Добавлен перерыв", null, added);
   }
   function moveLevel(idx, dir) {
     var j = idx + dir;
@@ -210,7 +249,9 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
       }
       sb = P.roundBlind(sb * (1 + genCfg.growth / 100));
     }
+    var before = state.levels.length;
     updateLevels(out);
+    P.logAction("levels", "Сгенерирована структура", before + " уровней", out.length + " уровней");
   }
 
   // ---------- cashdesk pricing / tariffs ----------
@@ -218,12 +259,19 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
   // behind cashdesk.open until the admin reviews/edits today's tariffs here
   // and explicitly opens the desk — see toggleCashdeskOpen().
   function updateCashdesk(patch) { persist(Object.assign({}, state, { cashdesk: Object.assign({}, state.cashdesk, patch) })); }
-  function toggleCashdeskOpen() { updateCashdesk({ open: !state.cashdesk.open }); }
+  function toggleCashdeskOpen() {
+    var opening = !state.cashdesk.open;
+    updateCashdesk({ open: opening });
+    P.logAction("cashdesk", opening ? "Касса открыта" : "Касса закрыта", !opening, opening);
+  }
   function newCashdeskDay() {
     if (!confirm("Начать новый день? Счётчики кассы (входы, реентри, аддоны, выбывшие) и журнал обнулятся. Тарифы (названия/цены/стеки) останутся как сейчас — кассу придётся открыть заново.")) return;
+    var before = { buyIns: state.cashdesk.buyIns, reEntries: state.cashdesk.reEntries, addons: state.cashdesk.addons, bustouts: state.cashdesk.bustouts };
     updateCashdesk({ buyIns: {}, reEntries: {}, addons: {}, bustouts: 0, log: [], open: false });
+    P.logAction("cashdesk", "Начат новый день (счётчики кассы обнулены)", before, { buyIns: {}, reEntries: {}, addons: {}, bustouts: 0 });
   }
   function setTariffField(listKey, id, field, val) {
+    var before = state.cashdesk[listKey].find(function (t) { return t.id === id; });
     var list = state.cashdesk[listKey].map(function (t) {
       if (t.id !== id) return t;
       var patch = {}; patch[field] = val;
@@ -231,10 +279,13 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
     });
     var patch = {}; patch[listKey] = list;
     updateCashdesk(patch);
+    P.logAction("tariff", "Правка тарифа (" + field + ")", before && before[field], val, before && before.label);
   }
   function addTariff(listKey, defaults) {
-    var patch = {}; patch[listKey] = state.cashdesk[listKey].concat([Object.assign({ id: P.uid() }, defaults)]);
+    var added = Object.assign({ id: P.uid() }, defaults);
+    var patch = {}; patch[listKey] = state.cashdesk[listKey].concat([added]);
     updateCashdesk(patch);
+    P.logAction("tariff", "Добавлен тариф", null, added);
   }
   // totalEntries/moneyCollected/avgStack (core.js) sum only over the CURRENT
   // tariff list — removing a tariff that already has counts would silently
@@ -251,12 +302,18 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
       alert("По этому тарифу уже есть продажи — удалить нельзя, иначе деньги и входы по нему молча пропадут из банка, среднего стека и призовых. Сначала «Начать новый день» (обнулит счётчики кассы), потом можно удалить тариф.");
       return;
     }
+    var removed = state.cashdesk[listKey].find(function (t) { return t.id === id; });
     var patch = {}; patch[listKey] = state.cashdesk[listKey].filter(function (t) { return t.id !== id; });
     updateCashdesk(patch);
+    P.logAction("tariff", "Удалён тариф", removed, null);
   }
 
   // ---------- prize ----------
-  function updatePrize(patch) { persist(Object.assign({}, state, { prize: Object.assign({}, state.prize, patch) })); }
+  function updatePrize(patch) {
+    var before = state.prize;
+    persist(Object.assign({}, state, { prize: Object.assign({}, state.prize, patch) }));
+    P.logAction("prize", "Правка призовых", before, patch);
+  }
 
   // ---------- templates ----------
   function saveTemplate() {
@@ -268,7 +325,9 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
   function loadTemplate(id) {
     var t = templates.find(function (x) { return x.id === id; });
     if (!t) return;
+    var before = state.levels.length;
     updateLevels(t.levels.map(function (l) { return Object.assign({}, l, { id: P.uid() }); }));
+    P.logAction("levels", "Загружен шаблон «" + t.name + "»", before + " уровней", t.levels.length + " уровней");
   }
   function deleteTemplate(id) {
     saveTemplates(templates.filter(function (t) { return t.id !== id; }));
@@ -391,7 +450,7 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
     '</section>';
 
     html += '<nav class="seg" aria-label="Разделы" style="align-self:flex-start;">';
-    [["timer","Уровни блайндов"],["cashdesk","Касса и суммы"],["prize","Призовые"],["templates","Шаблоны"]].forEach(function (t) {
+    [["timer","Уровни блайндов"],["cashdesk","Касса и суммы"],["prize","Призовые"],["templates","Шаблоны"],["journal","Журнал"]].forEach(function (t) {
       html += '<button class="seg-btn ' + (tab === t[0] ? "active" : "") + '" aria-pressed="' + (tab === t[0]) + '" onclick="setTab(\'' + t[0] + '\')">' + t[1] + '</button>';
     });
     html += '</nav>';
@@ -401,6 +460,7 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
     if (tab === "cashdesk") html += renderCashdeskTab();
     if (tab === "prize") html += renderPrizeTab();
     if (tab === "templates") html += renderTemplatesTab();
+    if (tab === "journal") html += renderJournalTab();
     html += '</div>';
 
     html += '<section class="card voice-row">' + ICONS.mic +
@@ -586,8 +646,46 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
     return html;
   }
 
+  function formatJournalVal(v) {
+    if (v == null) return "—";
+    if (typeof v === "object") {
+      return Object.keys(v).map(function (k) { return k + ": " + JSON.stringify(v[k]); }).join(", ") || "—";
+    }
+    return String(v);
+  }
+  function renderJournalTab() {
+    var html = '<section class="card" style="display:flex;flex-direction:column;gap:14px;">' +
+      '<div class="card-head"><h2 class="card-title">Журнал действий</h2><span class="card-hint">' + journalState.total + ' запис' + (journalState.total % 10 === 1 && journalState.total % 100 !== 11 ? "ь" : journalState.total % 10 >= 2 && journalState.total % 10 <= 4 && (journalState.total % 100 < 12 || journalState.total % 100 > 14) ? "и" : "ей") + ' всего · только добавление, ничего нельзя удалить или изменить</span></div>' +
+      '<div class="seg">';
+    JOURNAL_TYPES.forEach(function (t) {
+      html += '<button class="seg-btn ' + (journalState.filter === t[0] ? "active" : "") + '" aria-pressed="' + (journalState.filter === t[0]) + '" onclick="setJournalFilter(\'' + t[0] + '\')">' + t[1] + '</button>';
+    });
+    html += '</div></section>';
+
+    html += '<section class="card table-card" style="padding:0;">';
+    if (journalState.entries.length === 0) {
+      html += '<div class="muted" style="padding:24px;font-size:14px;">Записей пока нет.</div>';
+    } else {
+      journalState.entries.forEach(function (e) {
+        var t = new Date(e.at);
+        var time = String(t.getHours()).padStart(2,"0") + ":" + String(t.getMinutes()).padStart(2,"0") + ":" + String(t.getSeconds()).padStart(2,"0");
+        html += '<div class="journal-row">' +
+          '<div class="journal-time sg">' + time + '</div>' +
+          '<div class="journal-main">' +
+            '<div class="journal-action">' + esc(e.action) + (e.reason ? ' <span class="muted">· ' + esc(String(e.reason)) + '</span>' : '') + '</div>' +
+            '<div class="journal-diff sg muted">' + esc(formatJournalVal(e.before)) + ' &rarr; ' + esc(formatJournalVal(e.after)) + '</div>' +
+          '</div>' +
+          '<div class="journal-device muted">' + esc(e.device) + '</div>' +
+        '</div>';
+      });
+    }
+    html += '</section>';
+    return html;
+  }
+
   // expose handlers
-  window.setTab = function (t) { tab = t; render(); };
+  window.setTab = function (t) { tab = t; if (t === "journal") fetchJournal(); render(); };
+  window.setJournalFilter = setJournalFilter;
   window.updateName = updateName;
   window.start = start; window.pause = pause; window.pauseWithReason = pauseWithReason; window.skip = skip; window.resetClock = resetClock;
   window.adjustTime = adjustTime; window.setExactTime = setExactTime; window.setExactTimeInput = setExactTimeInput;
@@ -628,6 +726,7 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
   lastSyncedLevels = JSON.stringify(state.levels.map(function (l) { return l.duration; }));
   timerClient.syncLevels(state.levels); // bootstrap: server starts with no duration info at all
   setInterval(tickStatusBar, 250);
+  setInterval(function () { if (tab === "journal" && !journalState.loading) fetchJournal(); }, 4000);
   render();
 })();
 </script>

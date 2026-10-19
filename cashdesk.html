@@ -89,17 +89,24 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
   // single vs. double addon) — clicking a tariff's button bumps that
   // tariff's own counter, so money/chips totals stay correct per tariff.
   function clickEntry(kind, tariffId) {
+    var field = kind === "buyin" ? "buyIns" : "reEntries";
+    var before = state.cashdesk[field][tariffId] || 0;
     log(kind, tariffId);
-    persist(bumpTariff(kind === "buyin" ? "buyIns" : "reEntries", tariffId, 1));
+    persist(bumpTariff(field, tariffId, 1));
+    logCashAction(kind, tariffId, before, before + 1);
   }
   function clickAddon(tariffId) {
+    var before = state.cashdesk.addons[tariffId] || 0;
     log("addon", tariffId);
     persist(bumpTariff("addons", tariffId, 1));
+    logCashAction("addon", tariffId, before, before + 1);
   }
   function clickBustout() {
     if (P.playersRemaining(state) <= 0) return;
+    var before = state.cashdesk.bustouts;
     log("bustout", null);
     persist(bump("bustouts", 1));
+    logCashAction("bustout", null, before, before + 1);
   }
   function bump(field, delta) {
     var cd = Object.assign({}, state.cashdesk);
@@ -139,6 +146,7 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
     cd.log = cd.log.slice(0, -1);
     revert(cd, last);
     persist(Object.assign({}, state, { cashdesk: cd }));
+    P.logAction("cashdesk", "Отмена: " + logLineLabel(last), null, null);
   }
   // the "−" on a card undoes the most recent click of THAT button, so a
   // mistaken tap can be fixed even after other cards were clicked since
@@ -150,9 +158,13 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
         cd.log = cd.log.slice(0, i).concat(cd.log.slice(i + 1));
         revert(cd, l);
         persist(Object.assign({}, state, { cashdesk: cd }));
+        P.logAction("cashdesk", "Отмена: " + logLineLabel(l), null, null);
         return;
       }
     }
+  }
+  function logCashAction(type, tariffId, beforeCount, afterCount) {
+    P.logAction("cashdesk", logLineLabel({ type: type, tariffId: tariffId }), { count: beforeCount }, { count: afterCount });
   }
 
   var TYPE_LABEL = { buyin: "Вход", reentry: "Реентри", addon: "Аддон", bustout: "Выбыл" };

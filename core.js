@@ -332,6 +332,24 @@
     };
   }
 
+  // ---------- Step 3: action journal ----------
+  // Money/cashdesk/settings changes still live in each browser's localStorage
+  // (untouched — see admin.html/cashdesk.html), this just ALSO reports them
+  // to the server so there's one durable, cross-device, append-only record.
+  // Best-effort: a journal failure must never block the actual action, so
+  // this never throws and callers don't need to handle its result.
+  function logAction(type, action, before, after, reason) {
+    try {
+      return fetch("/api/journal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: type, action: action, before: before, after: after, reason: reason || null }),
+      }).catch(function () {});
+    } catch (e) {
+      return Promise.resolve();
+    }
+  }
+
   // ---------- sound (Web Audio — 100% offline, no network) ----------
   var sharedCtx = null;
   function getAudioCtx() {
@@ -505,6 +523,7 @@
     elapsedTournamentSeconds: elapsedTournamentSeconds,
     levelNumber: levelNumber,
     createTimerClient: createTimerClient,
+    logAction: logAction,
     getAudioCtx: getAudioCtx,
     playWarningSound: playWarningSound,
     playLevelChangeSound: playLevelChangeSound,
