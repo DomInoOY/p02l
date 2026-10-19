@@ -1,5 +1,6 @@
 .claude/settings.local.json
-.vercel
-.env*
 node_modules/
 *.log
+data/
+.vercel/
+.env*
