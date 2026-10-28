@@ -71,7 +71,7 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
   function render() {
     var total = P.prizePoolTotal(state);
     var breakdown = P.payoutBreakdown(state);
-    var entries = P.totalEntries(state);
+    var entries = P.paidEntries(state); // bracket is picked by paid entries, not re-entries — keep the label matching
 
     var html = '<header class="header">' +
       '<div class="header-left">' +
