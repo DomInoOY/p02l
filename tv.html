@@ -159,7 +159,15 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
     if (!s.isRunning) {
       s.isRunning = true; s.isPaused = false; s.levelStartedAt = Date.now(); s.pausedRemainingSec = null;
     } else if (s.isPaused) {
-      s.isPaused = false; s.levelStartedAt = Date.now(); s.pausedRemainingSec = null;
+      // resume bug: setting levelStartedAt=now() throws away pausedRemainingSec —
+      // levelRemaining() then computes full-elapsed from a fresh zero, snapping
+      // the clock back to the whole level duration instead of continuing from
+      // where it was paused. Back-date levelStartedAt so elapsed-so-far already
+      // equals (full - pausedRemainingSec), making remaining come out right.
+      var lvl = s.levels[s.currentLevelIndex];
+      var full = lvl ? lvl.duration * 60 : 0;
+      var rem = s.pausedRemainingSec != null ? s.pausedRemainingSec : full;
+      s.isPaused = false; s.levelStartedAt = Date.now() - (full - rem) * 1000; s.pausedRemainingSec = null;
     } else {
       // compute remaining BEFORE flipping isPaused — levelRemaining() short-circuits
       // to the full level duration once isPaused is true, so setting the flag first

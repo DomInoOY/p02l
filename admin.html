@@ -133,7 +133,15 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
   }
   function start() { persist(Object.assign({}, state, { isRunning: true, isPaused: false, levelStartedAt: Date.now(), pausedRemainingSec: null })); }
   function pause() { persist(Object.assign({}, state, { isPaused: true, pausedRemainingSec: Math.max(0, currentRemaining()), levelStartedAt: null })); }
-  function resume() { persist(Object.assign({}, state, { isPaused: false, levelStartedAt: Date.now(), pausedRemainingSec: null })); }
+  // same resume bug as tv.html's toggleRunning(): levelStartedAt=now() alone
+  // discards pausedRemainingSec, snapping the clock back to the full level
+  // duration instead of continuing — back-date levelStartedAt to compensate.
+  function resume() {
+    var lvl = state.levels[state.currentLevelIndex];
+    var full = lvl ? lvl.duration * 60 : 0;
+    var rem = state.pausedRemainingSec != null ? state.pausedRemainingSec : full;
+    persist(Object.assign({}, state, { isPaused: false, levelStartedAt: Date.now() - (full - rem) * 1000, pausedRemainingSec: null }));
+  }
   function skip(dir) {
     var idx = Math.min(Math.max(state.currentLevelIndex + dir, 0), state.levels.length - 1);
     persist(Object.assign({}, state, { currentLevelIndex: idx, levelStartedAt: Date.now(), pausedRemainingSec: null, isPaused: false }));
