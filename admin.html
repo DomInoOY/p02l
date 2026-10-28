@@ -604,7 +604,7 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
     '</section>';
 
     html += '<section class="card prize-right">' +
-      '<div class="card-head" style="margin-bottom:0;"><h2 class="card-title">Распределение по местам</h2><span class="card-hint">таблица Olympic Poker Club · ' + P.totalEntries(state) + ' входов</span></div>';
+      '<div class="card-head" style="margin-bottom:0;"><h2 class="card-title">Распределение по местам</h2><span class="card-hint">таблица Olympic Poker Club · ' + P.paidEntries(state) + ' входов (реентри не увеличивают сетку)</span></div>';
     if (breakdown.length === 0) {
       html += '<div class="muted" style="font-size:14px;">Нет входов — нечего распределять.</div>';
     } else {

@@ -187,6 +187,15 @@
     var cd = state.cashdesk;
     return sumMap(cd.buyIns) + sumMap(cd.reEntries);
   }
+  // entries that count toward the PAYOUT BRACKET size (Olympic Poker Club
+  // table) — club policy: a re-entry is billed and reseated like a rebuy
+  // (money + a full new stack), it does not buy another paid place, so it
+  // must not enlarge the bracket the way a fresh buy-in does. Deliberately
+  // separate from totalEntries(), which money/avgStack/playersRemaining
+  // still use unchanged — only payoutBreakdown()'s bracket lookup uses this.
+  function paidEntries(state) {
+    return sumMap(state.cashdesk.buyIns);
+  }
   function playersRemaining(state) {
     return Math.max(0, totalEntries(state) - state.cashdesk.bustouts);
   }
@@ -221,7 +230,7 @@
   }
   // returns [{place, amount}], rounded to nearest 100, remainder folded into 1st place
   function payoutBreakdown(state) {
-    var entries = totalEntries(state);
+    var entries = paidEntries(state);
     if (entries <= 0) return [];
     var bracket = pickBracket(entries);
     var total = prizePoolTotal(state);
@@ -513,6 +522,7 @@
     hhmm: hhmm,
     roundBlind: roundBlind,
     totalEntries: totalEntries,
+    paidEntries: paidEntries,
     playersRemaining: playersRemaining,
     avgStack: avgStack,
     moneyCollected: moneyCollected,
