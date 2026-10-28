@@ -196,8 +196,15 @@
   function paidEntries(state) {
     return sumMap(state.cashdesk.buyIns);
   }
+  // club policy (confirmed live): re-entry = rebuy for the SAME person —
+  // it tops up money and chips but is never a new player at the table, so
+  // headcount is driven off paid (buy-in) entries only, same as the payout
+  // bracket. avgStack() divides by this too (via playersRemaining below),
+  // which is correct: total chips already include re-entry stacks, so
+  // dividing by the real headcount — not an inflated entries count — gives
+  // the true average per person actually seated.
   function playersRemaining(state) {
-    return Math.max(0, totalEntries(state) - state.cashdesk.bustouts);
+    return Math.max(0, paidEntries(state) - state.cashdesk.bustouts);
   }
   function avgStack(state) {
     var rem = playersRemaining(state);

@@ -15,21 +15,35 @@ function freshState() {
   return { s: s, entryId: entryId, addonId: addonId };
 }
 
-test("re-entry: hotfix — money/avgStack/playersRemaining unaffected, only payout bracket size", function () {
-  var f = freshState(); // tariff: price 3000, stack 10000
+// Club policy, confirmed live mid-tournament: re-entry IS a rebuy for the
+// SAME person (lost their stack, or just topped it up) — never a new player.
+// So headcount (playersRemaining, and anywhere that drives TV/cashdesk
+// "Игроков") is paid (buy-in) entries only, same as the payout bracket.
+// Money and average stack still include re-entries — more chips and more
+// cash really did enter play, that part was never in question.
+
+test("playersRemaining counts buy-ins only — a re-entry is not a new player", function () {
+  var f = freshState();
   var s = f.s;
   s.cashdesk.buyIns[f.entryId] = 9;
   s.cashdesk.reEntries[f.entryId] = 2;
   s.cashdesk.bustouts = 1;
 
-  // unchanged by the fix — same formula, same numbers as before
-  assert.equal(P.totalEntries(s), 11, "buyIns+reEntries — still used by money/avgStack/playersRemaining");
-  assert.equal(P.playersRemaining(s), 10, "11 seats filled minus 1 bustout");
+  assert.equal(P.paidEntries(s), 9, "payout bracket and headcount both key off buy-ins");
+  assert.equal(P.playersRemaining(s), 8, "9 buy-ins minus 1 bustout — the 2 re-entries don't add seats");
+  // money/stack still see the re-entries — that money and those chips are real
+  assert.equal(P.totalEntries(s), 11, "still used by moneyCollected/avgStack's numerator");
   assert.equal(P.moneyCollected(s), 11 * 3000, "re-entry money still counted");
-  assert.equal(P.avgStack(s), Math.round((11 * 10000) / 10), "re-entry stack still counted");
+});
 
-  // the actual fix: re-entries must not buy another paid place
-  assert.equal(P.paidEntries(s), 9, "only buy-ins count toward the payout bracket");
+test("avgStack divides by real headcount, not inflated entries — re-entry chips land on fewer people, correctly raising the average", function () {
+  var f = freshState(); // tariff: stack 10000
+  var s = f.s;
+  s.cashdesk.buyIns[f.entryId] = 5;
+  s.cashdesk.reEntries[f.entryId] = 1; // one of the 5 rebought — still 5 people, 6 stacks' worth of chips
+
+  assert.equal(P.playersRemaining(s), 5);
+  assert.equal(P.avgStack(s), Math.round((6 * 10000) / 5), "6 stacks' worth shared across the 5 people actually seated");
 });
 
 test("payoutBreakdown picks its bracket off paidEntries, not totalEntries", function () {
@@ -49,13 +63,17 @@ test("payoutBreakdown picks its bracket off paidEntries, not totalEntries", func
   assert.ok(Math.abs(totalPaid - expectedPool) <= 1, "payout still adds up to the full pool (re-entry money is still in it)");
 });
 
-test("re-entry still buys a real seat for TV/cashdesk headcounts (totalEntries), only the bracket excludes it", function () {
-  var f = freshState();
-  var s = f.s;
-  s.cashdesk.buyIns[f.entryId] = 5;
-  s.cashdesk.reEntries[f.entryId] = 1; // one player busted and rebought
-  s.cashdesk.bustouts = 1;
+test("live scenario: 2 Стандарт + 4 Повышенный buy-ins, 2 Повышенный re-entries, 0 bustouts — 6 players, not 8", function () {
+  var s = P.defaultState();
+  var std = s.cashdesk.entryTariffs[0]; // "Стандарт"
+  var boosted = { id: P.uid(), label: "Повышенный", price: 5000, stack: 20000 };
+  s.cashdesk.entryTariffs.push(boosted);
 
-  assert.equal(P.playersRemaining(s), 5, "the rebuying player is back at the table");
-  assert.equal(P.paidEntries(s), 5, "but the rebuy didn't buy an extra paid place");
+  s.cashdesk.buyIns[std.id] = 2;
+  s.cashdesk.buyIns[boosted.id] = 4;
+  s.cashdesk.reEntries[boosted.id] = 2;
+
+  assert.equal(P.paidEntries(s), 6, "2 + 4 buy-ins — this is what 'players' and the payout bracket now see");
+  assert.equal(P.playersRemaining(s), 6, "nobody busted, all 6 still seated");
+  assert.equal(P.totalEntries(s), 8, "still the right number for money/avgStack's numerator");
 });
