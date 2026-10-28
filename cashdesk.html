@@ -279,7 +279,7 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
       '<div class="card summary">' +
         '<div style="display:flex;flex-direction:column;gap:4px;">' +
           '<div class="eyebrow">В игре</div>' +
-          '<div class="sg alive">' + P.playersRemaining(state) + '<small> / ' + P.totalEntries(state) + '</small></div>' +
+          '<div class="sg alive">' + P.playersRemaining(state) + '<small> / ' + P.paidEntries(state) + '</small></div>' +
         '</div>' +
         '<div class="divider"></div>' +
         sumRow("Банк", P.fmt(P.moneyCollected(state)) + " ₽") +

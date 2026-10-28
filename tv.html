@@ -296,7 +296,7 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
     // work out the club's rake cut; "Призовой фонд" at the bottom is the only
     // money figure shown.
     html += '<div class="stats">' +
-      statCard("Игроков", players + '<small> / ' + P.totalEntries(state) + '</small>') +
+      statCard("Игроков", players + '<small> / ' + P.paidEntries(state) + '</small>') +
       statCard("Средний стек", short(avg)) +
       statCard("В стеке ББ", !level.isBreak && level.bb > 0 && avg > 0 ? Math.round(avg / level.bb) : "—") +
     '</div>';

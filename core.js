@@ -198,7 +198,7 @@
     return sumMap(state.cashdesk.buyIns);
   }
   function playersRemaining(state) {
-    return Math.max(0, totalEntries(state) - state.cashdesk.bustouts);
+    return Math.max(0, paidEntries(state) - state.cashdesk.bustouts);
   }
   function avgStack(state) {
     var rem = playersRemaining(state);
