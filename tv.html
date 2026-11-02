@@ -207,6 +207,22 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
     }
     return -1;
   }
+  // time until the next break starts: what's left of the current level plus
+  // every full level before that break; null when no break is scheduled ahead
+  function secondsToBreak(levels, idx, remainingSec) {
+    var sec = Math.max(0, remainingSec);
+    for (var i = idx + 1; i < levels.length; i++) {
+      if (levels[i].isBreak) return sec;
+      sec += levels[i].duration * 60;
+    }
+    return null;
+  }
+  // mm:ss, or h:mm:ss once the wait passes an hour
+  function clockLong(sec) {
+    var s = Math.max(0, Math.floor(sec));
+    if (s < 3600) return P.mmss(s);
+    return Math.floor(s / 3600) + ":" + P.mmss(s % 3600);
+  }
   var ICONS = {
     prev: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 18l-8-6 8-6v12zM6 6v12"></path></svg>',
     next: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l8 6-8 6V6zM18 6v12"></path></svg>',
@@ -303,10 +319,11 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
     // and showing both the pre-rake total and the prize pool below lets anyone
     // work out the club's rake cut; "Призовой фонд" at the bottom is the only
     // money figure shown.
+    var toBreakSec = secondsToBreak(state.levels, state.currentLevelIndex, remaining);
     html += '<div class="stats">' +
       statCard("Игроков", players + '<small> / ' + P.paidEntries(state) + '</small>') +
       statCard("Средний стек", short(avg)) +
-      statCard("В стеке ББ", !level.isBreak && level.bb > 0 && avg > 0 ? Math.round(avg / level.bb) : "—") +
+      statCard("До перерыва", toBreakSec != null ? clockLong(toBreakSec) : "—") +
     '</div>';
     html += '</div>'; // info
     html += '</main>';
