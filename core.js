@@ -315,10 +315,49 @@
     beep({ freq: 1046.5, duration: 0.12, delay: 0, gain: 0.3 });
     beep({ freq: 1046.5, duration: 0.12, delay: 0.22, gain: 0.3 });
   }
+  // bell-like note: a few overtones that die out faster than the
+  // fundamental — carries across a noisy room far better than a bare beep
+  var BELL_PARTIALS = [[1, 1], [2, 0.5], [3, 0.28], [4.2, 0.16], [5.4, 0.1]];
+  function bellNote(ctx, dest, t0, freq, gain, dur) {
+    BELL_PARTIALS.forEach(function (p, i) {
+      var osc = ctx.createOscillator(), g = ctx.createGain();
+      var d = dur / (1 + i * 0.6);
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq * p[0], t0);
+      g.gain.setValueAtTime(0, t0);
+      g.gain.linearRampToValueAtTime(gain * p[1], t0 + 0.005);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + d);
+      osc.connect(g).connect(dest);
+      osc.start(t0);
+      osc.stop(t0 + d + 0.05);
+    });
+  }
+  // [frequency, start offset in seconds]; the last note rings longest
+  var CHIMES = {
+    level: [[523.25, 0], [659.25, 0.16], [783.99, 0.32], [1046.5, 0.48]], // rising: new blinds
+    "break": [[783.99, 0], [659.25, 0.24], [523.25, 0.48]], // falling: time to rest
+  };
+  // takes the context as an argument so a chime can also be rendered offline
+  function scheduleChime(ctx, name, t0, dest) {
+    var notes = CHIMES[name] || [];
+    notes.forEach(function (n, i) {
+      var last = i === notes.length - 1;
+      bellNote(ctx, dest || ctx.destination, t0 + n[1], n[0], last ? 0.4 : 0.3, last ? 1.8 : 0.9);
+    });
+  }
+  function playChime(name) {
+    var ctx = getAudioCtx();
+    if (!ctx) return;
+    try {
+      if (ctx.state === "suspended") ctx.resume();
+      scheduleChime(ctx, name, ctx.currentTime + 0.02);
+    } catch (e) {}
+  }
   function playLevelChangeSound() {
-    beep({ freq: 523.25, duration: 0.18, delay: 0, gain: 0.32 });
-    beep({ freq: 659.25, duration: 0.18, delay: 0.16, gain: 0.32 });
-    beep({ freq: 783.99, duration: 0.36, delay: 0.32, gain: 0.34 });
+    playChime("level");
+  }
+  function playBreakSound() {
+    playChime("break");
   }
   function playTickSound() {
     beep({ freq: 800, duration: 0.08, delay: 0, gain: 0.22, type: "square" });
@@ -329,20 +368,85 @@
 
   // speech synthesis uses the OS's own local voices — works fully offline,
   // unlike speech RECOGNITION which needs a network connection in Chrome.
-  function speak(text) {
+  // Chrome fills the voice list asynchronously, so the Russian voice is
+  // picked again once it arrives; a local voice wins over a network one so
+  // announcements never depend on the internet
+  var ruVoice = null;
+  function pickRuVoice() {
     try {
-      if (!("speechSynthesis" in window)) return;
-      var u = new SpeechSynthesisUtterance(text);
-      u.lang = "ru-RU";
-      u.rate = 1.0;
-      u.volume = 1.0;
-      var voices = window.speechSynthesis.getVoices();
-      var ru = voices.find(function (v) {
+      var ru = (window.speechSynthesis.getVoices() || []).filter(function (v) {
         return v.lang && v.lang.toLowerCase().indexOf("ru") === 0;
       });
-      if (ru) u.voice = ru;
-      window.speechSynthesis.speak(u);
+      ruVoice = ru.filter(function (v) { return v.localService; })[0] || ru[0] || null;
+    } catch (e) {
+      ruVoice = null;
+    }
+    return ruVoice;
+  }
+  if ("speechSynthesis" in window) {
+    pickRuVoice();
+    try { window.speechSynthesis.addEventListener("voiceschanged", pickRuVoice); } catch (e) {}
+  }
+  // opts.interrupt drops whatever is still being said (a newer announcement
+  // makes it stale); otherwise the phrase queues after the current one
+  function speak(text, opts) {
+    opts = opts || {};
+    try {
+      if (!("speechSynthesis" in window)) return;
+      var synth = window.speechSynthesis;
+      var u = new SpeechSynthesisUtterance(text);
+      u.lang = "ru-RU";
+      u.rate = opts.rate || 0.95;
+      u.volume = 1.0;
+      var voice = ruVoice || pickRuVoice();
+      if (voice) u.voice = voice;
+      if (opts.interrupt && (synth.speaking || synth.pending)) {
+        synth.cancel();
+        // Chrome can swallow a speak() issued in the same tick as cancel()
+        setTimeout(function () { synth.speak(u); }, 60);
+      } else {
+        synth.speak(u);
+      }
     } catch (e) {}
+  }
+
+  // Russian cardinal numbers in words for the announcements — a speech
+  // engine handed "26000" may read it digit by digit
+  var W_UNITS = ["", "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"];
+  var W_UNITS_F = ["", "одна", "две", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"];
+  var W_TEENS = ["десять", "одиннадцать", "двенадцать", "тринадцать", "четырнадцать", "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать", "девятнадцать"];
+  var W_TENS = ["", "", "двадцать", "тридцать", "сорок", "пятьдесят", "шестьдесят", "семьдесят", "восемьдесят", "девяносто"];
+  var W_HUNDREDS = ["", "сто", "двести", "триста", "четыреста", "пятьсот", "шестьсот", "семьсот", "восемьсот", "девятьсот"];
+  function pluralRu(n, one, few, many) {
+    var m10 = n % 10, m100 = n % 100;
+    if (m10 === 1 && m100 !== 11) return one;
+    if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+    return many;
+  }
+  function triadWords(n, feminine) {
+    var out = [], h = Math.floor(n / 100), t = Math.floor(n / 10) % 10, u = n % 10;
+    if (h) out.push(W_HUNDREDS[h]);
+    if (t === 1) {
+      out.push(W_TEENS[u]);
+    } else {
+      if (t) out.push(W_TENS[t]);
+      if (u) out.push((feminine ? W_UNITS_F : W_UNITS)[u]);
+    }
+    return out;
+  }
+  // a bare "тысяча" / "миллион" sounds natural; "одна тысяча" does not
+  function scaleWords(n, feminine, forms) {
+    return (n === 1 ? [] : triadWords(n, feminine)).concat([pluralRu(n, forms[0], forms[1], forms[2])]);
+  }
+  // feminine agrees the last digits with a feminine noun ("одна минута")
+  function numberWords(n, feminine) {
+    n = Math.floor(Math.abs(n));
+    if (n === 0) return "ноль";
+    var millions = Math.floor(n / 1e6), thousands = Math.floor(n / 1000) % 1000, rest = n % 1000, parts = [];
+    if (millions) parts = parts.concat(scaleWords(millions, false, ["миллион", "миллиона", "миллионов"]));
+    if (thousands) parts = parts.concat(scaleWords(thousands, true, ["тысяча", "тысячи", "тысяч"]));
+    if (rest) parts = parts.concat(triadWords(rest, feminine));
+    return parts.join(" ");
   }
 
   // ---------- voice command assistant ----------
@@ -451,9 +555,12 @@
     getAudioCtx: getAudioCtx,
     playWarningSound: playWarningSound,
     playLevelChangeSound: playLevelChangeSound,
+    playBreakSound: playBreakSound,
+    scheduleChime: scheduleChime,
     playTickSound: playTickSound,
     playClickSound: playClickSound,
     speak: speak,
+    numberWords: numberWords,
     createVoiceAssistant: createVoiceAssistant,
     PAYOUT_BRACKETS: PAYOUT_BRACKETS,
   };

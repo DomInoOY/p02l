@@ -12,7 +12,10 @@
   body { overflow: hidden; background: var(--bg-deep); }
   #root { height: 100vh; display: flex; flex-direction: column; gap: calc(var(--u) * 1.9); padding: calc(var(--u) * 2.5) calc(var(--u) * 3.3); position: relative; }
   .bg-overlay { position: absolute; inset: 0; background: var(--rust); pointer-events: none; z-index: 0; }
-  #root > *:not(.bg-overlay) { position: relative; z-index: 1; }
+  /* lift the page itself above the red pulse layer — only the layout blocks:
+     a catch-all here also outranks position:fixed on the countdown overlay,
+     the schedule modal and the sound toast and drops them into the flow */
+  #root > header, #root > main, #root > footer, #root > .kbd-hint { position: relative; z-index: 1; }
 
   .header { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
   .header-left, .header-right { display: flex; align-items: center; gap: calc(var(--u) * 1); }
@@ -27,6 +30,8 @@
   .controls .icon-btn, .controls .pill-btn { height: 40px; }
   .controls .icon-btn { width: 40px; border-radius: 10px; }
   .controls .pill-btn { padding: 0 14px; font-size: 14px; border-radius: 10px; }
+  .controls .icon-btn.muted { color: var(--rust); border-color: var(--rust); }
+  .sound-toast { position: fixed; top: calc(var(--u) * 6); right: calc(var(--u) * 3.3); z-index: 70; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 12px; padding: 12px 18px; font-size: 18px; font-weight: 600; color: var(--cream); }
 
   .main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 47fr) minmax(0, 53fr); gap: calc(var(--u) * 3.3); align-items: center; }
   /* the ring is sized by whichever is tighter: its column or the height left between header and footer */
@@ -102,7 +107,7 @@
   <div id="gate" class="gate" onclick="enableAndEnter()">
     <img id="gateLogo" alt="P02L">
     <div class="gate-title">Нажмите, чтобы начать</div>
-    <p>Включает звук и полноэкранный режим. Делайте это один раз при открытии экрана на TV.</p>
+    <p>Включает звук, голосовые объявления и полноэкранный режим. Делайте это один раз при открытии экрана на TV.</p>
   </div>
 
   <div id="root" style="display:none;"></div>
@@ -119,6 +124,7 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
   var warned = false;
   var lastTick = null;
   var prevIndex = state.currentLevelIndex;
+  var prevStarted = state.isRunning;
   var showSchedule = false;
   var gateOpen = true;
 
@@ -133,6 +139,9 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
       if (fn) fn.call(el);
     } catch (e) {}
     gateOpen = false;
+    // nothing that happened before the screen was opened gets announced
+    prevIndex = state.currentLevelIndex;
+    prevStarted = state.isRunning;
     document.getElementById("gate").style.display = "none";
     document.getElementById("root").style.display = "flex";
     requestWakeLock();
@@ -229,6 +238,10 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
     play: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true" style="fill:currentColor;stroke:none"><path d="M7 5l12 7-12 7z"></path></svg>',
     pause: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true" style="fill:currentColor;stroke:none"><rect x="6" y="5" width="4" height="14" rx="1"></rect><rect x="14" y="5" width="4" height="14" rx="1"></rect></svg>',
     full: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"></path></svg>',
+    sound_all: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"></path><path d="M16 9.5a3.5 3.5 0 0 1 0 5M18.5 7a7 7 0 0 1 0 10"></path></svg>',
+    sound_sound: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"></path><path d="M16 9.5a3.5 3.5 0 0 1 0 5"></path></svg>',
+    sound_off: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"></path><path d="M16 9.5l5 5M21 9.5l-5 5"></path></svg>',
+    test: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V6l10-2v12"></path><circle cx="6.5" cy="18" r="2.5"></circle><circle cx="16.5" cy="16" r="2.5"></circle></svg>',
   };
 
   function render() {
@@ -271,6 +284,8 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
             state.isPaused ? '<button class="pill-btn gold" onclick="toggleRunning()">' + ICONS.play + 'Продолжить</button>' :
             '<button class="pill-btn ghost" onclick="toggleRunning()">' + ICONS.pause + 'Пауза</button>') +
           '<button class="icon-btn" onclick="skipLevel(1)" aria-label="Следующий уровень" ' + (state.currentLevelIndex >= state.levels.length - 1 ? "disabled" : "") + '>' + ICONS.next + '</button>' +
+          '<button class="icon-btn' + (soundMode === "off" ? " muted" : "") + '" onclick="cycleSound()" aria-label="' + SOUND_LABEL[soundMode] + '" title="' + SOUND_LABEL[soundMode] + '">' + ICONS["sound_" + soundMode] + '</button>' +
+          '<button class="icon-btn" onclick="testSound()" aria-label="Проверить звук" title="Проверить звук">' + ICONS.test + '</button>' +
           '<button class="icon-btn" onclick="toggleFs()" aria-label="Полный экран">' + ICONS.full + '</button>' +
         '</div>' +
       '</div>' +
@@ -349,6 +364,7 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
 
     if (showSchedule) html += scheduleModal();
     if (state.isRunning && !state.isPaused && remaining <= 10 && remaining > 0) html += countdownOverlay(Math.ceil(remaining), nextLevel);
+    if (Date.now() < toastUntil) html += '<div class="sound-toast">' + SOUND_LABEL[soundMode] + '</div>';
 
     document.getElementById("root").innerHTML = html;
 
@@ -356,17 +372,23 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
     if (prevIndex !== state.currentLevelIndex) {
       prevIndex = state.currentLevelIndex;
       warned = false;
-      if (state.isRunning) P.playLevelChangeSound();
+      if (state.isRunning) announceLevel(state.currentLevelIndex);
+    } else if (state.isRunning && !prevStarted) {
+      announceLevel(state.currentLevelIndex, "Начинаем турнир.");
     }
+    prevStarted = state.isRunning;
     if (state.isRunning && !state.isPaused) {
       if (remaining <= 60 && remaining > 0 && !warned) {
         warned = true;
-        P.playWarningSound();
-        P.speak("Осталась одна минута");
+        // a level this short would talk over its own start announcement
+        if (level.duration * 60 > 90) {
+          if (chimesOn()) P.playWarningSound();
+          if (voiceOn()) P.speak(minuteWarning(state.levels, state.currentLevelIndex));
+        }
       }
       var sec = Math.ceil(remaining);
       if (sec >= 1 && sec <= 10) {
-        if (lastTick !== sec) { lastTick = sec; P.playTickSound(); }
+        if (lastTick !== sec) { lastTick = sec; if (chimesOn()) P.playTickSound(); }
       } else { lastTick = null; }
       // auto-advance
       if (remaining <= 0) {
@@ -414,6 +436,89 @@ var ICON_B64 = "iVBORw0KGgoAAAANSUhEUgAAASQAAAHjCAYAAACKFGLgAAEAAElEQVR42qT9ebws
     '</div>';
   }
 
+  // ---------- sound & voice announcements ----------
+  // three modes, remembered on this TV: voice + chimes, chimes only, silent
+  var SOUND_KEY = "p02l_tv_sound";
+  var SOUND_MODES = ["all", "sound", "off"];
+  var SOUND_LABEL = { all: "Звук: голос и сигналы", sound: "Звук: только сигналы", off: "Звук выключен" };
+  var soundMode = (function () {
+    try {
+      var m = localStorage.getItem(SOUND_KEY);
+      return SOUND_MODES.indexOf(m) >= 0 ? m : "all";
+    } catch (e) {
+      return "all";
+    }
+  })();
+  var toastUntil = 0;
+  function chimesOn() { return soundMode !== "off"; }
+  function voiceOn() { return soundMode === "all"; }
+  function cycleSound() {
+    soundMode = SOUND_MODES[(SOUND_MODES.indexOf(soundMode) + 1) % SOUND_MODES.length];
+    try { localStorage.setItem(SOUND_KEY, soundMode); } catch (e) {}
+    if (!voiceOn()) try { window.speechSynthesis.cancel(); } catch (e) {}
+    toastUntil = Date.now() + 2500;
+    render();
+  }
+
+  function blindsPhrase(l) {
+    return "блайнды " + P.numberWords(l.sb) + ", " + P.numberWords(l.bb) + "." +
+      (l.ante > 0 ? " Анте " + P.numberWords(l.ante) + "." : "");
+  }
+  function minutesPhrase(min) {
+    return P.numberWords(min, true) + " " + plural(min, "минута", "минуты", "минут");
+  }
+  // what the voice says when a level starts; a level right after a break
+  // also says the break is over unless a caller gives its own opening
+  function levelAnnouncement(levels, idx, prefix) {
+    var l = levels[idx];
+    if (!l) return "";
+    var prev = levels[idx - 1];
+    var head = prefix || (!l.isBreak && prev && prev.isBreak ? "Перерыв окончен." : "");
+    var body = l.isBreak
+      ? "Перерыв, " + minutesPhrase(l.duration) + "."
+      : "Уровень " + P.numberWords(P.levelNumber(levels, idx)) + ". Б" + blindsPhrase(l).slice(1);
+    return (head ? head + " " : "") + body;
+  }
+  // one minute left: says what comes next
+  function minuteWarning(levels, idx) {
+    var cur = levels[idx], next = levels[idx + 1];
+    if (cur && cur.isBreak) return "Через минуту продолжаем игру.";
+    if (next && next.isBreak) return "Через минуту перерыв.";
+    if (next) return "Осталась одна минута. Далее " + blindsPhrase(next);
+    return "Осталась одна минута.";
+  }
+
+  var announceTimer = null;
+  function announceLevel(idx, prefix) {
+    clearTimeout(announceTimer);
+    // skipping through several levels quickly only announces where it stops
+    announceTimer = setTimeout(function () {
+      if (state.currentLevelIndex !== idx || !state.levels[idx]) return;
+      if (chimesOn()) {
+        if (state.levels[idx].isBreak) P.playBreakSound();
+        else P.playLevelChangeSound();
+      }
+      if (!voiceOn()) return;
+      var text = levelAnnouncement(state.levels, idx, prefix);
+      // let the chime ring out before the voice starts
+      setTimeout(function () {
+        if (state.currentLevelIndex === idx) P.speak(text, { interrupt: true });
+      }, chimesOn() ? 1400 : 0);
+    }, 600);
+  }
+  // plays the current level's chime and announcement whatever the mode,
+  // so speakers and voice can be checked before the tournament
+  function testSound() {
+    var idx = state.currentLevelIndex, l = state.levels[idx];
+    if (l && l.isBreak) P.playBreakSound();
+    else P.playLevelChangeSound();
+    setTimeout(function () {
+      P.speak(l ? levelAnnouncement(state.levels, idx, "Проверка звука.") : "Проверка звука.", { interrupt: true });
+    }, 1400);
+  }
+
+  window.cycleSound = cycleSound;
+  window.testSound = testSound;
   window.toggleRunning = toggleRunning;
   window.skipLevel = skipLevel;
   window.toggleSchedule = function () { showSchedule = !showSchedule; render(); };
