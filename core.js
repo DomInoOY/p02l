@@ -368,85 +368,20 @@
 
   // speech synthesis uses the OS's own local voices — works fully offline,
   // unlike speech RECOGNITION which needs a network connection in Chrome.
-  // Chrome fills the voice list asynchronously, so the Russian voice is
-  // picked again once it arrives; a local voice wins over a network one so
-  // announcements never depend on the internet
-  var ruVoice = null;
-  function pickRuVoice() {
-    try {
-      var ru = (window.speechSynthesis.getVoices() || []).filter(function (v) {
-        return v.lang && v.lang.toLowerCase().indexOf("ru") === 0;
-      });
-      ruVoice = ru.filter(function (v) { return v.localService; })[0] || ru[0] || null;
-    } catch (e) {
-      ruVoice = null;
-    }
-    return ruVoice;
-  }
-  if ("speechSynthesis" in window) {
-    pickRuVoice();
-    try { window.speechSynthesis.addEventListener("voiceschanged", pickRuVoice); } catch (e) {}
-  }
-  // opts.interrupt drops whatever is still being said (a newer announcement
-  // makes it stale); otherwise the phrase queues after the current one
-  function speak(text, opts) {
-    opts = opts || {};
+  function speak(text) {
     try {
       if (!("speechSynthesis" in window)) return;
-      var synth = window.speechSynthesis;
       var u = new SpeechSynthesisUtterance(text);
       u.lang = "ru-RU";
-      u.rate = opts.rate || 0.95;
+      u.rate = 1.0;
       u.volume = 1.0;
-      var voice = ruVoice || pickRuVoice();
-      if (voice) u.voice = voice;
-      if (opts.interrupt && (synth.speaking || synth.pending)) {
-        synth.cancel();
-        // Chrome can swallow a speak() issued in the same tick as cancel()
-        setTimeout(function () { synth.speak(u); }, 60);
-      } else {
-        synth.speak(u);
-      }
+      var voices = window.speechSynthesis.getVoices();
+      var ru = voices.find(function (v) {
+        return v.lang && v.lang.toLowerCase().indexOf("ru") === 0;
+      });
+      if (ru) u.voice = ru;
+      window.speechSynthesis.speak(u);
     } catch (e) {}
-  }
-
-  // Russian cardinal numbers in words for the announcements — a speech
-  // engine handed "26000" may read it digit by digit
-  var W_UNITS = ["", "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"];
-  var W_UNITS_F = ["", "одна", "две", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"];
-  var W_TEENS = ["десять", "одиннадцать", "двенадцать", "тринадцать", "четырнадцать", "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать", "девятнадцать"];
-  var W_TENS = ["", "", "двадцать", "тридцать", "сорок", "пятьдесят", "шестьдесят", "семьдесят", "восемьдесят", "девяносто"];
-  var W_HUNDREDS = ["", "сто", "двести", "триста", "четыреста", "пятьсот", "шестьсот", "семьсот", "восемьсот", "девятьсот"];
-  function pluralRu(n, one, few, many) {
-    var m10 = n % 10, m100 = n % 100;
-    if (m10 === 1 && m100 !== 11) return one;
-    if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
-    return many;
-  }
-  function triadWords(n, feminine) {
-    var out = [], h = Math.floor(n / 100), t = Math.floor(n / 10) % 10, u = n % 10;
-    if (h) out.push(W_HUNDREDS[h]);
-    if (t === 1) {
-      out.push(W_TEENS[u]);
-    } else {
-      if (t) out.push(W_TENS[t]);
-      if (u) out.push((feminine ? W_UNITS_F : W_UNITS)[u]);
-    }
-    return out;
-  }
-  // a bare "тысяча" / "миллион" sounds natural; "одна тысяча" does not
-  function scaleWords(n, feminine, forms) {
-    return (n === 1 ? [] : triadWords(n, feminine)).concat([pluralRu(n, forms[0], forms[1], forms[2])]);
-  }
-  // feminine agrees the last digits with a feminine noun ("одна минута")
-  function numberWords(n, feminine) {
-    n = Math.floor(Math.abs(n));
-    if (n === 0) return "ноль";
-    var millions = Math.floor(n / 1e6), thousands = Math.floor(n / 1000) % 1000, rest = n % 1000, parts = [];
-    if (millions) parts = parts.concat(scaleWords(millions, false, ["миллион", "миллиона", "миллионов"]));
-    if (thousands) parts = parts.concat(scaleWords(thousands, true, ["тысяча", "тысячи", "тысяч"]));
-    if (rest) parts = parts.concat(triadWords(rest, feminine));
-    return parts.join(" ");
   }
 
   // ---------- voice command assistant ----------
@@ -560,7 +495,6 @@
     playTickSound: playTickSound,
     playClickSound: playClickSound,
     speak: speak,
-    numberWords: numberWords,
     createVoiceAssistant: createVoiceAssistant,
     PAYOUT_BRACKETS: PAYOUT_BRACKETS,
   };
