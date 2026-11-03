@@ -12,7 +12,10 @@
   body { overflow: hidden; background: var(--bg-deep); }
   #root { height: 100vh; display: flex; flex-direction: column; gap: calc(var(--u) * 1.9); padding: calc(var(--u) * 2.5) calc(var(--u) * 3.3); position: relative; }
   .bg-overlay { position: absolute; inset: 0; background: var(--rust); pointer-events: none; z-index: 0; }
-  #root > *:not(.bg-overlay) { position: relative; z-index: 1; }
+  /* lift the page itself above the red pulse layer — only the layout blocks:
+     a catch-all here also outranks position:fixed on the countdown overlay,
+     the schedule modal and the sound toast and drops them into the flow */
+  #root > header, #root > main, #root > footer, #root > .kbd-hint { position: relative; z-index: 1; }
 
   .header { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
   .header-left, .header-right { display: flex; align-items: center; gap: calc(var(--u) * 1); }
